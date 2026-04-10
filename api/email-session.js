@@ -7,7 +7,7 @@ async function gql(query, variables = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),
   });
-  if (!res.ok) throw new Error(`Dropmail HTTP error: ${res.status}`);
+  if (!res.ok) throw new Error(`Dropmail HTTP ${res.status}`);
   const json = await res.json();
   if (json.errors) throw new Error(json.errors[0].message);
   return json.data;
@@ -25,14 +25,14 @@ export default async function handler(req, res) {
           }
         }
       `);
-      const session = data.introduceSession;
+      const s = data.introduceSession;
       return res.json({
-        id: session.id,
-        expiresAt: session.expiresAt,
-        address: session.addresses[0]?.address || null,
+        id: s.id,
+        expiresAt: s.expiresAt,
+        address: s.addresses[0]?.address || null,
       });
     } catch (err) {
-      console.error("email-session error:", err);
+      console.error("email-session POST error:", err);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -50,12 +50,12 @@ export default async function handler(req, res) {
           }
         }
       `, { id });
-      const session = data.session;
-      if (!session) return res.status(404).json({ error: "session not found" });
+      const s = data.session;
+      if (!s) return res.status(404).json({ error: "session not found" });
       return res.json({
-        id: session.id,
-        expiresAt: session.expiresAt,
-        address: session.addresses[0]?.address || null,
+        id: s.id,
+        expiresAt: s.expiresAt,
+        address: s.addresses[0]?.address || null,
       });
     } catch (err) {
       console.error("email-session GET error:", err);

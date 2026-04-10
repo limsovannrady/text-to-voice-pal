@@ -9,7 +9,7 @@ async function gql(query, variables = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),
   });
-  if (!res.ok) throw new Error(`Dropmail HTTP error: ${res.status}`);
+  if (!res.ok) throw new Error(`Dropmail HTTP ${res.status}`);
   const json = await res.json();
   if (json.errors) throw new Error(json.errors[0].message);
   return json.data;
@@ -21,16 +21,11 @@ async function sendToTelegram(text) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: "HTML",
-      }),
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: "HTML" }),
     }
   );
   const json = await res.json();
-  if (!json.ok) throw new Error(`Telegram error: ${json.description}`);
-  return json;
+  if (!json.ok) throw new Error(`Telegram: ${json.description}`);
 }
 
 export default async function handler(req, res) {
@@ -50,9 +45,8 @@ export default async function handler(req, res) {
             rawSize
             fromAddr
             toAddr
-            downloadUrl
-            text
             headerSubject
+            text
           }
         }
       }
@@ -64,21 +58,16 @@ export default async function handler(req, res) {
     for (const mail of newMails) {
       const subject = mail.headerSubject || "(គ្មានប្រធានបទ)";
       const from = mail.fromAddr || "unknown";
-      const body = mail.text ? mail.text.slice(0, 3000) : "(គ្មានខ្លឹមសារ)";
-
-      const message =
+      const body = mail.text ? mail.text.slice(0, 3500) : "(គ្មានខ្លឹមសារ)";
+      await sendToTelegram(
         `📧 <b>Email ថ្មីបានមក!</b>\n\n` +
         `👤 <b>ពី:</b> ${from}\n` +
         `📌 <b>ប្រធានបទ:</b> ${subject}\n\n` +
-        `📝 <b>ខ្លឹមសារ:</b>\n${body}`;
-
-      await sendToTelegram(message);
+        `📝 <b>ខ្លឹមសារ:</b>\n${body}`
+      );
     }
 
-    return res.json({
-      mails,
-      forwarded: newMails.length,
-    });
+    return res.json({ mails, forwarded: newMails.length });
   } catch (err) {
     console.error("check-emails error:", err);
     return res.status(500).json({ error: err.message });
