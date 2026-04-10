@@ -131,34 +131,49 @@ async function pollLoop() {
   setTimeout(pollLoop, POLL_INTERVAL_MS);
 }
 
-// ---- Express API (for frontend display) ----
+// ---- Express API (mirrors Vercel api/ functions) ----
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/api/email-session", (req, res) => {
-  if (!currentSession) {
-    return res.status(503).json({ error: "Session not ready yet" });
-  }
-  res.json(currentSession);
-});
-
-app.get("/api/emails", async (req, res) => {
-  if (!currentSession) {
-    return res.status(503).json({ error: "Session not ready yet" });
-  }
-  try {
-    const mails = await fetchMails(currentSession.id);
-    res.json({ mails });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/new-session", async (req, res) => {
-  try {
-    await createSession();
+// POST /api/email-session → create new session
+// GET  /api/email-session → get current session info
+app.route("/api/email-session")
+  .post(async (req, res) => {
+    try {
+      await createSession();
+      res.json(currentSession);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  })
+  .get((req, res) => {
+    if (!currentSession) return res.status(503).json({ error: "Session not ready" });
     res.json(currentSession);
+  });
+
+// POST /api/check-emails → check + forward new emails to Telegram
+app.post("/api/check-emails", async (req, res) => {
+  const { sessionId, seenIds = [] } = req.body;
+  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+  if (!currentSession || currentSession.id !== sessionId) {
+    return res.status(404).json({ error: "session not found" });
+  }
+  try {
+    const mails = await fetchMails(sessionId);
+    const newMails = mails.filter((m) => !seenIds.includes(m.id));
+    for (const mail of newMails) {
+      const subject = mail.headerSubject || "(គ្មានប្រធានបទ)";
+      const from = mail.fromAddr || "unknown";
+      const body = mail.text ? mail.text.slice(0, 3500) : "(គ្មានខ្លឹមសារ)";
+      await sendToTelegram(
+        `📧 <b>Email ថ្មីបានមក!</b>\n\n` +
+        `👤 <b>ពី:</b> ${from}\n` +
+        `📌 <b>ប្រធានបទ:</b> ${subject}\n\n` +
+        `📝 <b>ខ្លឹមសារ:</b>\n${body}`
+      );
+    }
+    res.json({ mails, forwarded: newMails.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -168,12 +183,12 @@ app.post("/api/new-session", async (req, res) => {
 const distPath = join(__dirname, "dist");
 if (existsSync(distPath)) {
   app.use(express.static(distPath));
-  app.get("*", (req, res) => {
+  app.use((req, res) => {
     res.sendFile(join(distPath, "index.html"));
   });
 }
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
   pollLoop();
