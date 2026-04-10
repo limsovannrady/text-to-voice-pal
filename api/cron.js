@@ -49,12 +49,13 @@ async function createSession() {
   sessionAddress = s.addresses[0]?.address || null;
   sessionExpiresAt = s.expiresAt;
   seenMailIds.clear();
+
   await sendToTelegram(
     `📬 <b>Email Monitor ចាប់ផ្តើម!</b>\n\n` +
-    `📧 <b>Email address:</b> <code>${sessionAddress}</code>\n\n` +
-    `✅ Email ណាមួយផ្ញើទៅ address នេះ នឹងបញ្ជូនទៅ Telegram ដោយស្វ័យប្រវត្តិ!`
+    `📧 <b>Email address:</b>\n<code>${sessionAddress}</code>\n\n` +
+    `✅ ផ្ញើ Email ទៅ address នេះ → Telegram ទទួលដោយស្វ័យប្រវត្តិ!`
   );
-  console.log(`[Cron] New session: ${sessionAddress}`);
+  console.log(`[Cron] Session created: ${sessionAddress}`);
 }
 
 async function pollEmails() {
@@ -80,26 +81,39 @@ async function pollEmails() {
     const subject = mail.headerSubject || "(គ្មានប្រធានបទ)";
     const from = mail.fromAddr || "unknown";
     const body = mail.text ? mail.text.slice(0, 3500) : "(គ្មានខ្លឹមសារ)";
+
     await sendToTelegram(
       `📧 <b>Email ថ្មីបានមក!</b>\n\n` +
       `👤 <b>ពី:</b> ${from}\n` +
       `📌 <b>ប្រធានបទ:</b> ${subject}\n\n` +
       `📝 <b>ខ្លឹមសារ:</b>\n${body}`
     );
-    console.log(`[Cron] Forwarded email from ${from}`);
+    console.log(`[Cron] Forwarded mail from ${from}`);
   }
 
   return { total: mails.length, forwarded: newMails.length };
 }
 
 export default async function handler(req, res) {
+  // Accept GET and POST (external cron services use GET)
+  if (req.method !== "GET" && req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   try {
+    // Create or renew session if needed
     const expired = sessionExpiresAt && new Date(sessionExpiresAt).getTime() < Date.now();
     if (!sessionId || expired) {
       await createSession();
     }
+
     const result = await pollEmails();
-    return res.json({ ok: true, address: sessionAddress, ...result });
+    return res.json({
+      ok: true,
+      address: sessionAddress,
+      expiresAt: sessionExpiresAt,
+      ...result,
+    });
   } catch (err) {
     console.error("[Cron] Error:", err.message);
     return res.status(500).json({ error: err.message });
