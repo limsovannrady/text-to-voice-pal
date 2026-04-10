@@ -2,9 +2,9 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
-  ],
-  "crons": [
-    { "path": "/api/cron", "schedule": "* * * * *" }
+    { "source": "/api/email-session", "destination": "/api/email-session" },
+    { "source": "/api/check-emails", "destination": "/api/check-emails" },
+    { "source": "/api/cron", "destination": "/api/cron" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
