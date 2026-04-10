@@ -60,3 +60,8 @@ externalPort = 3002
 [[ports]]
 localPort = 5006
 externalPort = 3003
+
+[userenv]
+
+[userenv.shared]
+DROPMAIL_AUTH_TOKEN = "af_AQVp2QPNbPBl_iVoSYCIYWpEPYHtzkHOFd95EVtE"
