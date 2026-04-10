@@ -13,33 +13,38 @@ async function gql(query, variables = {}) {
   return json.data;
 }
 
+async function createSession() {
+  const data = await gql(`
+    mutation {
+      introduceSession {
+        id
+        expiresAt
+        addresses { address }
+      }
+    }
+  `);
+  const s = data.introduceSession;
+  return {
+    id: s.id,
+    expiresAt: s.expiresAt,
+    address: s.addresses[0]?.address || null,
+  };
+}
+
 export default async function handler(req, res) {
-  if (req.method === "POST") {
+  // POST or GET without id → create new session
+  if (req.method === "POST" || (req.method === "GET" && !req.query.id)) {
     try {
-      const data = await gql(`
-        mutation {
-          introduceSession {
-            id
-            expiresAt
-            addresses { address }
-          }
-        }
-      `);
-      const s = data.introduceSession;
-      return res.json({
-        id: s.id,
-        expiresAt: s.expiresAt,
-        address: s.addresses[0]?.address || null,
-      });
+      const session = await createSession();
+      return res.json(session);
     } catch (err) {
-      console.error("email-session POST error:", err);
+      console.error("email-session create error:", err);
       return res.status(500).json({ error: err.message });
     }
   }
 
-  if (req.method === "GET") {
-    const { id } = req.query;
-    if (!id) return res.status(400).json({ error: "id required" });
+  // GET with id → fetch existing session info
+  if (req.method === "GET" && req.query.id) {
     try {
       const data = await gql(`
         query($id: ID!) {
@@ -49,7 +54,7 @@ export default async function handler(req, res) {
             addresses { address }
           }
         }
-      `, { id });
+      `, { id: req.query.id });
       const s = data.session;
       if (!s) return res.status(404).json({ error: "session not found" });
       return res.json({
