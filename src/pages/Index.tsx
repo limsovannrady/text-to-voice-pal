@@ -9,7 +9,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Play, Square, Volume2 } from "lucide-react";
+import { Play, Square, Volume2, Send } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+
+const TELEGRAM_BOT_TOKEN = "8692133259:AAH5STtuCXv4aMJyePhJi6qJeAHwlYlrPYE";
+const TELEGRAM_CHAT_ID = "5002402843";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -22,12 +26,14 @@ const LANGUAGES = [
 ];
 
 const Index = () => {
+  const { toast } = useToast();
   const [text, setText] = useState("");
   const [lang, setLang] = useState("en");
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
   const [rate, setRate] = useState([1]);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
@@ -64,6 +70,36 @@ const Index = () => {
   const handleStop = () => {
     speechSynthesis.cancel();
     setIsSpeaking(false);
+  };
+
+  const handleSendToTelegram = async () => {
+    if (!text.trim()) return;
+    setIsSending(true);
+    try {
+      const langLabel = LANGUAGES.find((l) => l.code === lang)?.label || lang;
+      const message = `🔊 *Text to Speech*\n\n📝 *Text:* ${text}\n🌐 *Language:* ${langLabel}\n⚡ *Speed:* ${rate[0].toFixed(1)}x`;
+      const res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: "Markdown",
+          }),
+        }
+      );
+      if (res.ok) {
+        toast({ title: "បានផ្ញើទៅ Telegram រួចរាល់!" });
+      } else {
+        toast({ title: "ផ្ញើបានបរាជ័យ", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "ផ្ញើបានបរាជ័យ", variant: "destructive" });
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -156,6 +192,16 @@ const Index = () => {
                   <Play className="w-4 h-4" /> Play
                 </>
               )}
+            </Button>
+            <Button
+              variant="outline"
+              className="h-12 px-5 gap-2"
+              onClick={handleSendToTelegram}
+              disabled={!text.trim() || isSending}
+              data-testid="button-send-telegram"
+            >
+              <Send className="w-4 h-4" />
+              {isSending ? "កំពុងផ្ញើ..." : "Telegram"}
             </Button>
           </div>
         </div>
