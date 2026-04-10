@@ -55,10 +55,7 @@ export default async function handler(req, res) {
       new Blob([audioBuffer], { type: "audio/mpeg" }),
       "voice.mp3"
     );
-    formData.set(
-      "caption",
-      `🔊 ${text.slice(0, 100)}${text.length > 100 ? "…" : ""}`
-    );
+
 
     const tgRes = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVoice`,
