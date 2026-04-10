@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, RefreshCw, Mail, CheckCircle, Inbox, Wifi } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const POLL_MS = 15000;
+const POLL_MS = 3000;
 const SESSION_KEY = "dm_session";
 const SEEN_KEY = "dm_seen";
 
@@ -170,7 +170,7 @@ const Index = () => {
           </p>
           <div className="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 dark:bg-green-950 dark:text-green-400 px-3 py-1 rounded-full">
             <Wifi className="w-3 h-3" />
-            Vercel Cron ២៤/៧
+            Forward ភ្លាមៗ
           </div>
         </div>
 
@@ -236,7 +236,7 @@ const Index = () => {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            🤖 Vercel Cron ពិនិត្យរៀងរាល់ 1 នាទី · Email ចូលមក → Telegram ដោយមិនចាំបាច់ចូល website
+            🤖 ពិនិត្យរៀងរាល់ 3 វិនាទី · Email ចូលមក → Telegram ភ្លាមៗ
           </p>
         </div>
 
