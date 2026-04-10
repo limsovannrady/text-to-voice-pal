@@ -26,8 +26,12 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "npm run dev"
+args = "node api-server.mjs & npm run dev"
 waitForPort = 5000
+
+[[ports]]
+localPort = 3001
+externalPort = 6000
 
 [[ports]]
 localPort = 5000

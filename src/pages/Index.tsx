@@ -12,8 +12,6 @@ import { Slider } from "@/components/ui/slider";
 import { Play, Square, Volume2, Send } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const TELEGRAM_BOT_TOKEN = "8692133259:AAH5STtuCXv4aMJyePhJi6qJeAHwlYlrPYE";
-const TELEGRAM_CHAT_ID = "5002402843";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -72,61 +70,22 @@ const Index = () => {
     setIsSpeaking(false);
   };
 
-  const fetchAudioChunk = async (chunk: string): Promise<ArrayBuffer> => {
-    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=${lang}&client=tw-ob&ttsspeed=${rate[0]}`;
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(ttsUrl)}`;
-    const res = await fetch(proxyUrl);
-    if (!res.ok) throw new Error("TTS fetch failed");
-    return res.arrayBuffer();
-  };
-
   const handleSendToTelegram = async () => {
     if (!text.trim()) return;
     setIsSending(true);
     try {
-      // Google TTS limit ~200 chars per request — split into chunks
-      const MAX = 180;
-      const words = text.trim().split(" ");
-      const chunks: string[] = [];
-      let current = "";
-      for (const word of words) {
-        if ((current + " " + word).trim().length > MAX) {
-          if (current) chunks.push(current.trim());
-          current = word;
-        } else {
-          current = (current + " " + word).trim();
-        }
-      }
-      if (current) chunks.push(current.trim());
+      const res = await fetch("/api/send-voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.trim(), lang }),
+      });
 
-      // Fetch all chunks and merge ArrayBuffers
-      const buffers = await Promise.all(chunks.map(fetchAudioChunk));
-      const totalLength = buffers.reduce((sum, b) => sum + b.byteLength, 0);
-      const merged = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const buf of buffers) {
-        merged.set(new Uint8Array(buf), offset);
-        offset += buf.byteLength;
-      }
-
-      const audioBlob = new Blob([merged], { type: "audio/mpeg" });
-
-      const formData = new FormData();
-      formData.append("chat_id", TELEGRAM_CHAT_ID);
-      formData.append("voice", audioBlob, "voice.mp3");
-      formData.append("caption", `🔊 ${text.slice(0, 100)}${text.length > 100 ? "…" : ""}`);
-
-      const res = await fetch(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVoice`,
-        { method: "POST", body: formData }
-      );
-
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.ok) {
         toast({ title: "បានផ្ញើសំឡេងទៅ Telegram រួចរាល់! 🎙️" });
       } else {
-        const err = await res.json();
-        console.error("Telegram error:", err);
-        toast({ title: "ផ្ញើបានបរាជ័យ", variant: "destructive" });
+        console.error("Error:", data);
+        toast({ title: `ផ្ញើបានបរាជ័យ: ${data.error ?? "unknown"}`, variant: "destructive" });
       }
     } catch (e) {
       console.error(e);
