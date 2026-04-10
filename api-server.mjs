@@ -1,114 +1,180 @@
 import express from "express";
 import cors from "cors";
-import { createRequire } from "module";
-import { PassThrough } from "stream";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { existsSync } from "fs";
 
-const require = createRequire(import.meta.url);
-const gtts = require("node-gtts");
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const DROPMAIL_AUTH_TOKEN = process.env.DROPMAIL_AUTH_TOKEN;
+const GQL_URL = `https://dropmail.me/api/graphql/${DROPMAIL_AUTH_TOKEN}`;
+const POLL_INTERVAL_MS = 15000;
 
-// Languages supported by node-gtts
-const GTTS_LANGS = new Set([
-  "af","sq","ar","hy","ca","zh","zh-cn","zh-tw","zh-yue","hr","cs","da","nl",
-  "en","en-au","en-uk","en-us","eo","fi","fr","de","el","ht","hi","hu","is",
-  "id","it","ja","ko","la","lv","mk","no","pl","pt","pt-br","ro","ru","sr",
-  "sk","es","es-es","es-us","sw","sv","ta","th","tr","vi","cy"
-]);
+// ---- In-memory state ----
+let currentSession = null;   // { id, address, expiresAt }
+let seenMailIds = new Set();
 
-// Fetch audio directly from Google TTS (no CORS issue from server side)
-async function fetchGoogleTTS(text, lang) {
-  const MAX = 180;
-  const words = text.split(/\s+/);
-  const chunks = [];
-  let current = "";
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (candidate.length > MAX) {
-      if (current) chunks.push(current);
-      current = word;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current) chunks.push(current);
-
-  const buffers = await Promise.all(
-    chunks.map(async (chunk) => {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(chunk)}&tl=${lang}&client=tw-ob`;
-      const res = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
-      });
-      if (!res.ok) throw new Error(`Google TTS error: ${res.status}`);
-      return Buffer.from(await res.arrayBuffer());
-    })
-  );
-
-  return Buffer.concat(buffers);
-}
-
-// Fetch audio using node-gtts
-function fetchGtts(text, lang) {
-  return new Promise((resolve, reject) => {
-    const tts = gtts(lang);
-    const chunks = [];
-    const stream = new PassThrough();
-    stream.on("data", (chunk) => chunks.push(chunk));
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
-    stream.on("error", reject);
-    tts.stream(text, stream);
+// ---- Dropmail GraphQL helper ----
+async function gql(query, variables = {}) {
+  const res = await fetch(GQL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
   });
+  if (!res.ok) throw new Error(`Dropmail HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.errors) throw new Error(json.errors[0].message);
+  return json.data;
 }
 
+// ---- Create new session ----
+async function createSession() {
+  const data = await gql(`
+    mutation {
+      introduceSession {
+        id
+        expiresAt
+        addresses { address }
+      }
+    }
+  `);
+  const s = data.introduceSession;
+  currentSession = {
+    id: s.id,
+    address: s.addresses[0]?.address || null,
+    expiresAt: s.expiresAt,
+  };
+  seenMailIds = new Set();
+  console.log(`[Dropmail] Session created: ${currentSession.address}`);
+  await sendToTelegram(
+    `📬 <b>Email Monitor បានចាប់ផ្តើម!</b>\n\n` +
+    `📧 <b>Email address:</b> <code>${currentSession.address}</code>\n\n` +
+    `✅ Email ណាមួយដែលផ្ញើទៅ address នេះ នឹងត្រូវបានបញ្ជូនទៅ Telegram ដោយស្វ័យប្រវត្តិ!`
+  );
+}
+
+// ---- Fetch emails from session ----
+async function fetchMails(sessionId) {
+  const data = await gql(`
+    query($id: ID!) {
+      session(id: $id) {
+        mails {
+          id
+          rawSize
+          fromAddr
+          toAddr
+          headerSubject
+          text
+        }
+      }
+    }
+  `, { id: sessionId });
+  return data.session?.mails || [];
+}
+
+// ---- Send message to Telegram ----
+async function sendToTelegram(text) {
+  const res = await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text,
+        parse_mode: "HTML",
+      }),
+    }
+  );
+  const json = await res.json();
+  if (!json.ok) throw new Error(`Telegram: ${json.description}`);
+}
+
+// ---- Background polling loop ----
+async function pollLoop() {
+  try {
+    if (!currentSession) {
+      await createSession();
+    } else {
+      // Check if session is expired
+      const expiry = new Date(currentSession.expiresAt).getTime();
+      if (expiry < Date.now()) {
+        console.log("[Dropmail] Session expired, creating new one...");
+        await createSession();
+      }
+    }
+
+    const mails = await fetchMails(currentSession.id);
+    const newMails = mails.filter((m) => !seenMailIds.has(m.id));
+
+    for (const mail of newMails) {
+      seenMailIds.add(mail.id);
+      const subject = mail.headerSubject || "(គ្មានប្រធានបទ)";
+      const from = mail.fromAddr || "unknown";
+      const body = mail.text ? mail.text.slice(0, 3500) : "(គ្មានខ្លឹមសារ)";
+
+      const message =
+        `📧 <b>Email ថ្មីបានមក!</b>\n\n` +
+        `👤 <b>ពី:</b> ${from}\n` +
+        `📌 <b>ប្រធានបទ:</b> ${subject}\n\n` +
+        `📝 <b>ខ្លឹមសារ:</b>\n${body}`;
+
+      await sendToTelegram(message);
+      console.log(`[Dropmail] Forwarded email from ${from} → Telegram`);
+    }
+  } catch (err) {
+    console.error("[Dropmail] Poll error:", err.message);
+  }
+
+  setTimeout(pollLoop, POLL_INTERVAL_MS);
+}
+
+// ---- Express API (for frontend display) ----
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.post("/api/send-voice", async (req, res) => {
-  const { text, lang } = req.body;
-  if (!text || !lang) {
-    return res.status(400).json({ error: "text and lang are required" });
+app.get("/api/email-session", (req, res) => {
+  if (!currentSession) {
+    return res.status(503).json({ error: "Session not ready yet" });
   }
+  res.json(currentSession);
+});
 
+app.get("/api/emails", async (req, res) => {
+  if (!currentSession) {
+    return res.status(503).json({ error: "Session not ready yet" });
+  }
   try {
-    let audioBuffer;
-    if (GTTS_LANGS.has(lang)) {
-      audioBuffer = await fetchGtts(text, lang);
-    } else {
-      // Fallback to direct Google TTS HTTP (works server-side for km, etc.)
-      audioBuffer = await fetchGoogleTTS(text, lang);
-    }
-
-    const formData = new FormData();
-    formData.set("chat_id", TELEGRAM_CHAT_ID);
-    formData.set(
-      "voice",
-      new Blob([audioBuffer], { type: "audio/mpeg" }),
-      "voice.mp3"
-    );
-
-
-    const tgRes = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVoice`,
-      { method: "POST", body: formData }
-    );
-
-    const tgJson = await tgRes.json();
-    if (tgJson.ok) {
-      res.json({ ok: true });
-    } else {
-      console.error("Telegram error:", tgJson);
-      res.status(500).json({ error: tgJson.description });
-    }
+    const mails = await fetchMails(currentSession.id);
+    res.json({ mails });
   } catch (err) {
-    console.error("Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(3001, () => {
-  console.log("API server running on port 3001");
+app.post("/api/new-session", async (req, res) => {
+  try {
+    await createSession();
+    res.json(currentSession);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Serve static frontend in production
+const distPath = join(__dirname, "dist");
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => {
+    res.sendFile(join(distPath, "index.html"));
+  });
+}
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
+  pollLoop();
 });
