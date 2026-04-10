@@ -6,8 +6,8 @@ import { PassThrough } from "stream";
 const require = createRequire(import.meta.url);
 const gtts = require("node-gtts");
 
-const TELEGRAM_BOT_TOKEN = "8692133259:AAH5STtuCXv4aMJyePhJi6qJeAHwlYlrPYE";
-const TELEGRAM_CHAT_ID = "5002402843";
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // Languages supported by node-gtts
 const GTTS_LANGS = new Set([
