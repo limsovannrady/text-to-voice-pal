@@ -3,9 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, RefreshCw, Mail, CheckCircle, Inbox, Wifi } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const POLL_MS = 3000;
-const SESSION_KEY = "dm_session";
-const SEEN_KEY = "dm_seen";
+const POLL_MS = 5000;
 
 interface MailItem {
   id: string;
@@ -26,36 +24,25 @@ const Index = () => {
   const { toast } = useToast();
   const [session, setSession] = useState<Session | null>(null);
   const [mails, setMails] = useState<MailItem[]>([]);
-  const [seenIds, setSeenIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
   const [selectedMail, setSelectedMail] = useState<MailItem | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevMailCount = useRef(0);
 
-  // ---- Helpers ----
-  const saveSession = (s: Session) => {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-  };
-
-  const loadSession = (): Session | null => {
+  // ---- Fetch server's current session ----
+  const fetchSession = useCallback(async () => {
     try {
-      const raw = localStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
-      const s: Session = JSON.parse(raw);
-      if (new Date(s.expiresAt).getTime() < Date.now()) return null;
-      return s;
-    } catch { return null; }
-  };
+      const res = await fetch("/api/email-session");
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data as Session;
+    } catch {
+      return null;
+    }
+  }, []);
 
-  const loadSeenIds = (): string[] => {
-    try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "[]"); } catch { return []; }
-  };
-
-  const saveSeenIds = (ids: string[]) => {
-    localStorage.setItem(SEEN_KEY, JSON.stringify(ids));
-  };
-
-  // ---- Create new session ----
+  // ---- Create new session on server ----
   const createSession = useCallback(async () => {
     setLoading(true);
     try {
@@ -64,10 +51,8 @@ const Index = () => {
       if (!res.ok) throw new Error(data.error || "Failed");
       setSession(data);
       setMails([]);
-      setSeenIds([]);
-      saveSession(data);
-      saveSeenIds([]);
       setSelectedMail(null);
+      prevMailCount.current = 0;
       toast({ title: "📧 Email address ថ្មីបានបង្កើតរួចហើយ!" });
     } catch (err: any) {
       toast({ title: `បរាជ័យ: ${err.message}`, variant: "destructive" });
@@ -76,81 +61,59 @@ const Index = () => {
     }
   }, [toast]);
 
-  // ---- Poll for new emails ----
-  const pollEmails = useCallback(async (sess: Session, seen: string[], showLoader = false) => {
+  // ---- Fetch emails for display only (server handles forwarding) ----
+  const fetchEmails = useCallback(async (showLoader = false) => {
     if (showLoader) setChecking(true);
     try {
-      const res = await fetch("/api/check-emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sess.id, seenIds: seen }),
-      });
+      const res = await fetch("/api/emails");
+      if (!res.ok) return;
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
-
       if (data.mails) {
-        setMails(data.mails);
-        if (data.forwarded > 0) {
-          const newIds = data.mails
-            .filter((m: MailItem) => !seen.includes(m.id))
-            .map((m: MailItem) => m.id);
-          const merged = [...seen, ...newIds];
-          setSeenIds(merged);
-          saveSeenIds(merged);
-          toast({ title: `📨 Email ថ្មី ${data.forwarded} បានបញ្ជូនទៅ Telegram!` });
+        if (data.mails.length > prevMailCount.current && prevMailCount.current >= 0) {
+          const newCount = data.mails.length - prevMailCount.current;
+          if (prevMailCount.current > 0) {
+            toast({ title: `📨 Email ថ្មី ${newCount} បានបញ្ជូនទៅ Telegram!` });
+          }
         }
+        prevMailCount.current = data.mails.length;
+        setMails(data.mails);
       }
     } catch (err: any) {
-      console.error("poll error:", err.message);
+      console.error("fetch emails error:", err.message);
     } finally {
       if (showLoader) setChecking(false);
     }
   }, [toast]);
 
-  // ---- Start polling loop ----
-  const startPolling = useCallback((sess: Session, seen: string[]) => {
+  // ---- Start display polling loop ----
+  const startPolling = useCallback(() => {
     if (pollTimer.current) clearInterval(pollTimer.current);
-    pollEmails(sess, seen);
+    fetchEmails();
     pollTimer.current = setInterval(() => {
-      setSeenIds((currentSeen) => {
-        pollEmails(sess, currentSeen);
-        return currentSeen;
-      });
+      fetchEmails();
     }, POLL_MS);
-  }, [pollEmails]);
+  }, [fetchEmails]);
 
-  // ---- On mount: restore or create session ----
+  // ---- On mount: get server session ----
   useEffect(() => {
-    const saved = loadSession();
-    const seen = loadSeenIds();
-    if (saved) {
-      setSession(saved);
-      setSeenIds(seen);
-      startPolling(saved, seen);
-    } else {
-      createSession();
-    }
+    const init = async () => {
+      const sess = await fetchSession();
+      if (sess) {
+        setSession(sess);
+        startPolling();
+      } else {
+        await createSession();
+        startPolling();
+      }
+    };
+    init();
     return () => { if (pollTimer.current) clearInterval(pollTimer.current); };
   }, []);
-
-  // Restart polling when session changes
-  useEffect(() => {
-    if (!session) return;
-    startPolling(session, seenIds);
-    return () => { if (pollTimer.current) clearInterval(pollTimer.current); };
-  }, [session?.id]);
 
   const copyEmail = () => {
     if (!session?.address) return;
     navigator.clipboard.writeText(session.address);
     toast({ title: "✅ Email address បានចម្លងរួចហើយ!" });
-  };
-
-  const handleNewSession = () => {
-    if (pollTimer.current) clearInterval(pollTimer.current);
-    localStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(SEEN_KEY);
-    createSession();
   };
 
   return (
@@ -170,7 +133,7 @@ const Index = () => {
           </p>
           <div className="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 dark:bg-green-950 dark:text-green-400 px-3 py-1 rounded-full">
             <Wifi className="w-3 h-3" />
-            Forward ភ្លាមៗ
+            Forward ភ្លាមៗ — Server រត់ ២៤/៧
           </div>
         </div>
 
@@ -215,7 +178,7 @@ const Index = () => {
               variant="outline"
               size="sm"
               className="gap-1.5"
-              onClick={() => session && pollEmails(session, seenIds, true)}
+              onClick={() => fetchEmails(true)}
               disabled={!session || checking}
               data-testid="button-refresh"
             >
@@ -226,7 +189,7 @@ const Index = () => {
               variant="outline"
               size="sm"
               className="gap-1.5"
-              onClick={handleNewSession}
+              onClick={createSession}
               disabled={loading}
               data-testid="button-new-email"
             >
@@ -236,7 +199,7 @@ const Index = () => {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            🤖 ពិនិត្យរៀងរាល់ 3 វិនាទី · Email ចូលមក → Telegram ភ្លាមៗ
+            🤖 Server ពិនិត្យរៀងរាល់ 3 វិនាទី · Email ចូលមក → Telegram ភ្លាមៗ · មិនចាំបាច់ចូល website
           </p>
         </div>
 

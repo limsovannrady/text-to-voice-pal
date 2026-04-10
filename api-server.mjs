@@ -10,7 +10,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DROPMAIL_AUTH_TOKEN = process.env.DROPMAIL_AUTH_TOKEN;
 const GQL_URL = `https://dropmail.me/api/graphql/${DROPMAIL_AUTH_TOKEN}`;
-const POLL_INTERVAL_MS = 15000;
+const POLL_INTERVAL_MS = 3000;
 
 // ---- In-memory state ----
 let currentSession = null;   // { id, address, expiresAt }
@@ -152,28 +152,12 @@ app.route("/api/email-session")
     res.json(currentSession);
   });
 
-// POST /api/check-emails → check + forward new emails to Telegram
-app.post("/api/check-emails", async (req, res) => {
-  const { sessionId, seenIds = [] } = req.body;
-  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-  if (!currentSession || currentSession.id !== sessionId) {
-    return res.status(404).json({ error: "session not found" });
-  }
+// GET /api/emails → return current mails for display (server handles forwarding)
+app.get("/api/emails", async (req, res) => {
+  if (!currentSession) return res.status(503).json({ error: "No active session" });
   try {
-    const mails = await fetchMails(sessionId);
-    const newMails = mails.filter((m) => !seenIds.includes(m.id));
-    for (const mail of newMails) {
-      const subject = mail.headerSubject || "(គ្មានប្រធានបទ)";
-      const from = mail.fromAddr || "unknown";
-      const body = mail.text ? mail.text.slice(0, 3500) : "(គ្មានខ្លឹមសារ)";
-      await sendToTelegram(
-        `📧 <b>Email ថ្មីបានមក!</b>\n\n` +
-        `👤 <b>ពី:</b> ${from}\n` +
-        `📌 <b>ប្រធានបទ:</b> ${subject}\n\n` +
-        `📝 <b>ខ្លឹមសារ:</b>\n${body}`
-      );
-    }
-    res.json({ mails, forwarded: newMails.length });
+    const mails = await fetchMails(currentSession.id);
+    res.json({ mails });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
