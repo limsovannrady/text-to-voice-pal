@@ -160,9 +160,7 @@ const Index = () => {
           </div>
         </div>
 
-        <p className="text-center text-xs text-muted-foreground">
-          Powered by Web Speech API
-        </p>
+
       </div>
     </div>
   );
