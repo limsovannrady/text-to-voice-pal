@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Copy, RefreshCw, Mail, CheckCircle, Inbox, Wifi } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const POLL_INTERVAL = 15000;
+const POLL_MS = 15000;
+const SESSION_KEY = "dm_session";
+const SEEN_KEY = "dm_seen";
 
 interface MailItem {
   id: string;
@@ -24,58 +26,119 @@ const Index = () => {
   const { toast } = useToast();
   const [session, setSession] = useState<Session | null>(null);
   const [mails, setMails] = useState<MailItem[]>([]);
-  const [prevCount, setPrevCount] = useState(0);
+  const [seenIds, setSeenIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [selectedMail, setSelectedMail] = useState<MailItem | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [newSession, setNewSession] = useState(false);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchSession = useCallback(async () => {
-    try {
-      const res = await fetch("/api/email-session");
-      if (res.ok) {
-        const data = await res.json();
-        setSession(data);
-      }
-    } catch {}
-  }, []);
+  // ---- Helpers ----
+  const saveSession = (s: Session) => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  };
 
-  const fetchEmails = useCallback(async (showLoader = false) => {
-    if (showLoader) setRefreshing(true);
+  const loadSession = (): Session | null => {
     try {
-      const res = await fetch("/api/emails");
-      if (res.ok) {
-        const data = await res.json();
-        setMails(data.mails || []);
-        setPrevCount((prev) => {
-          if (data.mails?.length > prev && prev > 0) {
-            toast({ title: `📨 Email ថ្មី ${data.mails.length - prev} បានបញ្ជូនទៅ Telegram!` });
-          }
-          return data.mails?.length || 0;
-        });
-      }
-    } catch {} finally {
-      if (showLoader) setRefreshing(false);
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const s: Session = JSON.parse(raw);
+      if (new Date(s.expiresAt).getTime() < Date.now()) return null;
+      return s;
+    } catch { return null; }
+  };
+
+  const loadSeenIds = (): string[] => {
+    try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "[]"); } catch { return []; }
+  };
+
+  const saveSeenIds = (ids: string[]) => {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(ids));
+  };
+
+  // ---- Create new session ----
+  const createSession = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/email-session", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      setSession(data);
+      setMails([]);
+      setSeenIds([]);
+      saveSession(data);
+      saveSeenIds([]);
+      setSelectedMail(null);
+      toast({ title: "📧 Email address ថ្មីបានបង្កើតរួចហើយ!" });
+    } catch (err: any) {
+      toast({ title: `បរាជ័យ: ${err.message}`, variant: "destructive" });
+    } finally {
+      setLoading(false);
     }
   }, [toast]);
 
-  const handleNewSession = async () => {
-    setNewSession(true);
+  // ---- Poll for new emails ----
+  const pollEmails = useCallback(async (sess: Session, seen: string[], showLoader = false) => {
+    if (showLoader) setChecking(true);
     try {
-      const res = await fetch("/api/new-session", { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        setSession(data);
-        setMails([]);
-        setPrevCount(0);
-        setSelectedMail(null);
-        toast({ title: "📧 Email address ថ្មីបានបង្កើតរួចហើយ!" });
+      const res = await fetch("/api/check-emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sess.id, seenIds: seen }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+
+      if (data.mails) {
+        setMails(data.mails);
+        if (data.forwarded > 0) {
+          const newIds = data.mails
+            .filter((m: MailItem) => !seen.includes(m.id))
+            .map((m: MailItem) => m.id);
+          const merged = [...seen, ...newIds];
+          setSeenIds(merged);
+          saveSeenIds(merged);
+          toast({ title: `📨 Email ថ្មី ${data.forwarded} បានបញ្ជូនទៅ Telegram!` });
+        }
       }
-    } catch {
-      toast({ title: "បរាជ័យ", variant: "destructive" });
+    } catch (err: any) {
+      console.error("poll error:", err.message);
     } finally {
-      setNewSession(false);
+      if (showLoader) setChecking(false);
     }
-  };
+  }, [toast]);
+
+  // ---- Start polling loop ----
+  const startPolling = useCallback((sess: Session, seen: string[]) => {
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    pollEmails(sess, seen);
+    pollTimer.current = setInterval(() => {
+      setSeenIds((currentSeen) => {
+        pollEmails(sess, currentSeen);
+        return currentSeen;
+      });
+    }, POLL_MS);
+  }, [pollEmails]);
+
+  // ---- On mount: restore or create session ----
+  useEffect(() => {
+    const saved = loadSession();
+    const seen = loadSeenIds();
+    if (saved) {
+      setSession(saved);
+      setSeenIds(seen);
+      startPolling(saved, seen);
+    } else {
+      createSession();
+    }
+    return () => { if (pollTimer.current) clearInterval(pollTimer.current); };
+  }, []);
+
+  // Restart polling when session changes
+  useEffect(() => {
+    if (!session) return;
+    startPolling(session, seenIds);
+    return () => { if (pollTimer.current) clearInterval(pollTimer.current); };
+  }, [session?.id]);
 
   const copyEmail = () => {
     if (!session?.address) return;
@@ -83,16 +146,17 @@ const Index = () => {
     toast({ title: "✅ Email address បានចម្លងរួចហើយ!" });
   };
 
-  useEffect(() => {
-    fetchSession();
-    fetchEmails();
-    const interval = setInterval(() => fetchEmails(), POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchSession, fetchEmails]);
+  const handleNewSession = () => {
+    if (pollTimer.current) clearInterval(pollTimer.current);
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(SEEN_KEY);
+    createSession();
+  };
 
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-2xl mx-auto space-y-5">
+
         {/* Header */}
         <div className="text-center pt-8 pb-2 space-y-2">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/10 mb-2">
@@ -102,11 +166,11 @@ const Index = () => {
             Email → Telegram
           </h1>
           <p className="text-muted-foreground text-sm">
-            Email ចូលមក → បញ្ជូនទៅ Telegram ដោយស្វ័យប្រវត្តិ ២៤/៧
+            Email ចូលមក → បញ្ជូនទៅ Telegram ដោយស្វ័យប្រវត្តិ
           </p>
           <div className="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 dark:bg-green-950 dark:text-green-400 px-3 py-1 rounded-full">
             <Wifi className="w-3 h-3" />
-            Server កំពុងដំណើរការ
+            Vercel Cron ២៤/៧
           </div>
         </div>
 
@@ -116,12 +180,18 @@ const Index = () => {
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               អាសយដ្ឋាន Email
             </span>
+            {checking && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <RefreshCw className="w-3 h-3 animate-spin" />
+                កំពុងពិនិត្យ...
+              </span>
+            )}
           </div>
 
           {session ? (
             <div className="flex items-center gap-2">
               <div
-                className="flex-1 bg-muted rounded-xl px-4 py-3 font-mono text-sm text-foreground break-all"
+                className="flex-1 bg-muted rounded-xl px-4 py-3 font-mono text-sm text-foreground break-all select-all"
                 data-testid="text-email-address"
               >
                 {session.address}
@@ -145,19 +215,19 @@ const Index = () => {
               variant="outline"
               size="sm"
               className="gap-1.5"
-              onClick={() => fetchEmails(true)}
-              disabled={refreshing}
+              onClick={() => session && pollEmails(session, seenIds, true)}
+              disabled={!session || checking}
               data-testid="button-refresh"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
-              ផ្ទុកឡើងវិញ
+              <RefreshCw className={`w-3.5 h-3.5 ${checking ? "animate-spin" : ""}`} />
+              ពិនិត្យឥឡូវ
             </Button>
             <Button
               variant="outline"
               size="sm"
               className="gap-1.5"
               onClick={handleNewSession}
-              disabled={newSession}
+              disabled={loading}
               data-testid="button-new-email"
             >
               <Mail className="w-3.5 h-3.5" />
@@ -166,7 +236,7 @@ const Index = () => {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            🤖 Server poll ដោយស្វ័យប្រវត្តិរៀងរាល់ 15 វិនាទី · Email ចូលមក → Telegram ដោយមិនចាំបាច់ចូល website
+            🤖 Vercel Cron ពិនិត្យរៀងរាល់ 1 នាទី · Email ចូលមក → Telegram ដោយមិនចាំបាច់ចូល website
           </p>
         </div>
 
@@ -221,7 +291,7 @@ const Index = () => {
                   </div>
 
                   {selectedMail?.id === mail.id && (
-                    <div className="mt-3 p-3 bg-muted rounded-xl text-xs text-foreground whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                    <div className="mt-3 p-3 bg-muted rounded-xl text-xs text-foreground whitespace-pre-wrap break-words max-h-48 overflow-y-auto">
                       {mail.text || "(គ្មានខ្លឹមសារ)"}
                     </div>
                   )}
@@ -230,6 +300,7 @@ const Index = () => {
             </div>
           )}
         </div>
+
       </div>
     </div>
   );
